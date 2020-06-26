@@ -8,15 +8,15 @@ With fixed width memory (multiple of power-of-2 bytes) the maximum storage size 
 whereas with variable-width memory the unrestricted storage size is determined at run-time.
 
 This project is an experimental environment for storing data in bit-addressable memory.
-It is intended to beidge the worlds of the `xtools` and `untangle` projects.
+It is intended to bridge the worlds of the `xtools` and `untangle` projects.
 
 The proposed encoding has these features:
  - Streaming.
  - No maximum size.
  - Simple and fast encoding/decoding.
  - Simple and fast length detection.
- - Simple implementation of bitwise and integer arithmetic operators.
- - Easy hardware implementation.
+ - Simple functional implementation of bitwise and integer arithmetic operators.
+ - Simple hardware implementation.
 
 # Encoding/decoding scheme
 
