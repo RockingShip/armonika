@@ -72,11 +72,15 @@ unsigned encode(char *pDest, uint64_t num, int N) {
 		}
 	}
 
-	// inject terminator
-	while (N > 0) {
+	// full-terminator if last emitted was not "0"
+	if (last != 0)
+		count = 0;
+
+	// append terminator
+	while (count <= N) {
 		*pDest++ = '0';
 		length++;
-		--N;
+		++count;
 	}
 
 	// string terminator

@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2020-06-26 17:06:38 Fixed incomplete terminator.
 2020-06-26 15:59:58 Added `frequency.c`.
 2020-06-24 00:29:02 Initial commit.
 ```
