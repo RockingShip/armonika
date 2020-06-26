@@ -64,7 +64,7 @@ The binary input is read right-to-left, the string output is read left-to-right.
 | 10010 | 010011000  | 01001000 
 | 10011 | 110010100  | 11001000 
 
-The largest binary number that fits in 32 bits:
+The first binary number that does not fit in 32 bits:
  - for N=2. 43691 (0x0000aaab) which is encoded as "110011001100110011001100110011000".
  - for N=3. 1074791 (0x00106667) which is encoded as "111000111000111000111000100011000".
  - for N=4. 3728271 (0x0038e38f) which is encoded as "111100001111000011110000111100000".
