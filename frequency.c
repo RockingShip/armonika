@@ -91,10 +91,6 @@ int main(int argc, char *argv[]) {
 	int N; // runlength
 	int k;
 
-	for (k=0; k<20; k++)
-		encode(dest,k,3), puts(dest);
-	return 0;
-
 	for (N = runlengthMin; N <= runlengthMax; ++N) {
 		// clear counts
 		for (k = 0; k < 128; ++k)
