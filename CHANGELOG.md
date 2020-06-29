@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [Release 1.0.0] 2020-06-29 13:23:01
+
+Basic proof of concept. 
+Signed variable-width numbers with configurable runlength terminator.
+
 ```
 2020-06-29 13:03:05 Added support for negative numbers.
 2020-06-26 17:06:38 Fixed incomplete terminator.
@@ -13,4 +18,4 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 2020-06-24 00:29:02 Initial commit.
 ```
 
-[Unreleased]: /RockingShip/armonika
+[Unreleased]: /RockingShip/armonika/compare/v1.0.0...HEAD
