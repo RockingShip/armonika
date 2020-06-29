@@ -70,6 +70,18 @@ The first number that does not fit in 32 bits:
  - for N=4. 2098063 (0x0020038f) which is encoded as "111100001111000010000100001100000".
  - for N=5. 2220512 (0x0021e1e0) which is encoded as "000001111100000111110000011000000".
 
+For unsigned encoding only the number 15 is different:
+    N=2, signed "11011000", unsigned "111010000"  
+    N=2, signed "111010000", unsigned "11110000"  
+
+# Unsigned
+
+Although the encoding supports variable-length negative numbers, this functionality is not always used.
+Most procedural languages with 32/64 bits wordsize all work in modulo 2^32 (or 64) numerical space.
+"-1" is not "minus 1" which is negative, "-1" is actually "-1 modulo 2^32 (or 64)" which is unsigned and therefor positive.
+
+An additional implementation is included for unsigned variable-length numbers.  
+  
 # Frequency count
 
 Lowest `N` is simplest implementation, higher `N` is greater storage efficiency.
@@ -113,6 +125,38 @@ Counted are all the values in range 0-65535.
 Using `N=2` are clearly not efficient and using `N>2` does not show significant differences.
 
 Taking `N=3` as default has an average of ~22 bits which is ~40% more storage than 16-bits binary encoded.
+
+For unsigned encoding:
+
+| length | N = 2 | N = 3 | N = 4 | N = 5 | notes |
+|-------:|------:|------:|------:|------:|:------|
+|  3 |     1 |       |       |       |
+|  4 |     1 |     1 |       |       |
+|  5 |     2 |     1 |     1 |       |
+|  6 |     3 |     2 |     1 |     1 |
+|  7 |     6 |     4 |     2 |     1 |
+|  8 |    11 |     7 |     4 |     2 |
+|  9 |    20 |    14 |     8 |     4 |
+| 10 |    37 |    27 |    15 |     8 |
+| 11 |    68 |    52 |    30 |    16 |
+| 12 |   125 |   100 |    59 |    31 |
+| 13 |   230 |   193 |   116 |    62 |
+| 14 |   423 |   372 |   228 |   123 |
+| 15 |   778 |   717 |   448 |   244 |
+| 16 |  1431 |  1382 |   881 |   484 | &lt;--- maximum length with binary encoding
+| 17 |  2632 |  2664 |  1732 |   960 |
+| 18 |  4841 |  5135 |  3405 |  1904 |
+| 19 |  8904 |  9898 |  6694 |  3777 |
+| 20 | 13793 | 19079 | 13160 |  7492 |
+| 21 | 15106 | 17263 | 25872 | 14861 |
+| 22 | 10812 |  7178 | 11215 | 29478 |
+| 23 |  4846 |  1351 |  1602 |  5816 |
+| 24 |  1281 |    95 |    63 |   271 |
+| 25 |   176 |     1 |       |     1 |
+| 26 |     9 |       |       |       |
+
+The average encoding length is somewhere between 20 and 22.
+With `N=2` the encoding has possibly the simplest implementation with a high yield.
 
 # Versioning
 

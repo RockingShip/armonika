@@ -1,9 +1,11 @@
 /*
- * frequency.c
+ * ufrequency.c
  *
- * @date 2020-06-26 00:06:58
+ * @date 2020-06-29 14:07:33
  *
  * Encode numbers with different N and frequency count the resulting lengths.
+ *
+ * NOTE: unsigned encoding
  */
 
 /*
@@ -43,16 +45,14 @@ enum {
  * @param {number} N - runlength
  * @return {number} - length including terminator.
  */
-unsigned encode(char *pDest, int64_t num, int N) {
+unsigned encode(char *pDest, uint64_t num, int N) {
 	unsigned count = 0; // current runlength (number of consecutive bits of same polarity)
-	unsigned last = 0; // last bit that was output (value has no meaning when count=0)
 	unsigned length = 0; // length of encoded result
 
 	// as long as there are input bits
-	while (num && num != -1) {
+	while (num) {
 		// extract next LSB from input
 		unsigned bit = num & 1;
-		// NOTE: right shift of signed negative number will keep MSB set to "1". This will continue until "-1" where it stays 'unchanged'.
 		num >>= 1;
 
 		// inject into output
@@ -60,31 +60,22 @@ unsigned encode(char *pDest, int64_t num, int N) {
 		length++;
 
 		// update runlength
-		if (last != bit) {
-			// polarity changed
-			last = bit;
-			count = 1;
+		if (bit == 1) {
+			// consecutive "1" can be unlimited in length
+			count = 0;
 		} else if (++count == N) {
 			// runlength limit reached, inject opposite polarity
-			*pDest++ = '1' - bit;
+			*pDest++ = '1';
 			length++;
-			last = 1 - bit;
-			count = 1;
+			count = 0;
 		}
 	}
 
-	// get polarity number (either all bits "0"" or all bits "1"
-	num &= 1;
-
-	// reset run length if last bit output has different polarity than terminator
-	if (last != num)
-		count = 0;
-
 	// append terminator
-	while (count <= N) {
-		*pDest++ = '0' + num;
+	while (N >= 0) {
+		*pDest++ = '0';
 		length++;
-		++count;
+		--N;
 	}
 
 	// string terminator
@@ -101,11 +92,10 @@ unsigned encode(char *pDest, int64_t num, int N) {
  * @param {number} N - runlength
  * @return {int64_t} - The decoded value as variable length structurele. for demonstration purpose assuming it will fit in less that 64 bits.
  */
-int64_t decode(char *pSrc, int N) {
+uint64_t decode(char *pSrc, int N) {
 	unsigned count = 0; // current runlength (number of consecutive bits of same polarity)
-	unsigned last = 0; // last bit that was output (value has no meaning when count=0)
 	unsigned length = 0; // length of encoded result
-	int64_t num = 0; // number being decoded
+	uint64_t num = 0; // number being decoded
 
 	// The condition is a failsafe as the runN terminator is the end condition
 	while (*pSrc) {
@@ -117,24 +107,17 @@ int64_t decode(char *pSrc, int N) {
 		length++;
 
 		// update runlength
-		if (last != bit) {
-			// polarity changed
-			last = bit;
-			count = 1;
+		if (bit == 1) {
+			// consecutive "1" can be unlimited in length
+			count = 0;
 		} else if (++count == N) {
 			// runlength reached, get next bit
 			bit = *pSrc++ - '0';
-			if (bit == last)
+			if (bit == 0)
 				break; // N+1 consecutive bits of same polarity is terminator
-
-			// swap polatity
-			last = 1 - last;
-			count = 1;
+			count = 0;
 		}
 	}
-
-	// fill upper bits of fixed width number with polarity of terminator
-	num |= -((uint64_t) last << length);
 
 	return num;
 }
@@ -155,11 +138,11 @@ int main(int argc, char *argv[]) {
 
 		// encode numbers and count length
 		// NOTE: Both negative as positive numbers
-		for (k = -numMax; k < numMax; ++k) {
+		for (k = 0; k < numMax; ++k) {
 			// encode number
 			unsigned length = encode(dest, k, N);
 			// test that it properly decodes
-			int64_t decoded = decode(dest, N);
+			uint64_t decoded = decode(dest, N);
 			// test identical
 			if (k != decoded) {
 				fprintf(stderr, "Selftest failure. Expected %x, encountered %lx\n", k, decoded);

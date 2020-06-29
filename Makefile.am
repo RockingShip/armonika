@@ -3,7 +3,10 @@ EXTRA_DIST = \
 	LICENSE CHANGELOG.md README.md \
 	.gitignore
 
-bin_PROGRAMS = frequency
+bin_PROGRAMS = sfrequency ufrequency
 
 # @date 2020-06-26 00:06:58
-frequency_SOURCES = frequency.c
+sfrequency_SOURCES = sfrequency.c
+
+# @date 2020-06-29 14:07:33
+ufrequency_SOURCES = ufrequency.c

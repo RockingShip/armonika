@@ -6,10 +6,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+```
+2020-06-29 14:07:33 Added `ufrequency.c` for unsigned encoding.
+                    Renamed `frequency.c` into `sfrequency.c` for signed encoding. 
+```
+
 ## [Release 1.0.0] 2020-06-29 13:23:01
 
-Basic proof of concept. 
-Signed variable-width numbers with configurable runlength terminator.
+Basic proof of concept.  
+Signed variable-width numbers with configurable runlength terminator.  
 
 ```
 2020-06-29 13:03:05 Added support for negative numbers.
