@@ -28,167 +28,151 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define bit(MEM,POS) ({ unsigned _pos=(POS); (MEM)[_pos>>3] & (1<<(_pos&7)); })
-#define emit(MEM,POS,BIT) ({ unsigned _pos=(POS); (MEM)[_pos>>3] |= (BIT)<<(_pos&7); })
+// what is value of next bit in the sequence
+#define bit(MEM, POS) ({ unsigned _pos=(POS); (MEM)[_pos>>3] & (1<<(_pos&7)); })
+// this is next bit of the sequence
+#define emit(MEM, POS, BIT) ({ unsigned _pos=(POS); if (BIT) (MEM)[_pos>>3] |= 1<<(_pos&7); else (MEM)[_pos>>3] &= ~(1<<(_pos&7)); })
 
 unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
 
-	/*
-	 * Determine initial state
-	 */
-	if (bit(pL, iL++)) goto L1_R_E1; else goto L0_R_E1;
+#include "statedata.h"
 
-	/*
-	 * States that extend L/R without emitting results 
-	 */
-L_R1_E1: // left empty, right pending "1", last emitted "1"
-	if (bit(pL, iL++)) goto L1_R1_E1; else goto L0_R1_E1; // extend L
-L_R0_E1: // left empty, right pending "1", last emitted "1"
-	if (bit(pL, iL++)) goto L1_R0_E1; else goto L0_R0_E1; // extend L
-L1_R_E1: // left pending "1", right empty, last emitted "1"
-	if (bit(pR, iR++)) goto L1_R1_E1; else goto L1_R0_E1; // extend R
-L0_R_E1: // left pending "0", right empty, last emitted "1"
-	if (bit(pR, iR++)) goto L0_R1_E1; else goto L0_R0_E1; // extend R
-L0_R1_E1: // left pending "0", right pending "1", last emitted "1"
-	if (bit(pL, iL++)) goto L01_R1_E1; else goto L00_R1_E1; // mandatory extend L
-L0_R0_E1: // left pending "0", right pending "0", last emitted "1"
-	if (bit(pL, iL++)) goto L01_R0_E1; else goto L00_R0_E1; // mandatory extend L
-L1_R0_E1: // left pending "1", right pending "0", last emitted "1"
-	if (bit(pR, iR++)) goto L1_R01_E1; else goto L1_R00_E1; // mandatory extend R
-L01_R0_E1: // left pending "01", right pending "0", last emitted "1"
-	if (bit(pR, iR++)) goto L01_R01_E1; else goto L01_R00_E1; // mandatory extend R
-L00_R0_E1: // left pending "0", right pending "0", last emitted "1"
-	if (bit(pR, iR++)) goto L00_R01_E1; else goto L00_R00_E1; // mandatory extend R
+}
 
-	/*
-	 * States free of terminator logic 
-	 */
-L1_R1_E1: // left pending "1", right pending "1", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting single bit state is L_R_E1
-	if (bit(pL, iL++)) goto L1_R_E1; else goto L0_R_E1; // extend L
-L1_R01_E1: // left pending "1", right pending "01", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting single bit state is L_R1_E1
-	if (bit(pL, iL++)) goto L1_R1_E1; else goto L0_R1_E1; // extend L
-L01_R1_E1: // left pending "01", right pending "1", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting single bit state is L1_R_E1
-	if (bit(pR, iR++)) goto L1_R1_E1; else goto L1_R0_E1; // extend R
-L01_R01_E1: // left pending "01", right pending "01", last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // after emitting double bit state is L_R_E1
-	if (bit(pL, iL++)) goto L1_R_E1; else goto L0_R_E1; // extend L
+/**
+ * Encode value into runlength-N, return string and length.
+ * NOTE: encoded number is unsigned
+ *
+ * @param {string} pDest - Encoded stream as string (LSB first).
+ * @param {number} num - number to encode.
+ * @param {number} N - runlength
+ * @return {number} - length including terminator.
+ */
+unsigned encode(unsigned char *pDest, unsigned bitpos, uint64_t num, int N) {
+	unsigned count = 0; // current runlength (number of consecutive bits of same polarity)
 
-	/*
-	 * Either one or both sides has maximum consecutive zero bits.
-	 * Single bit output
-	 */
-L00_R1_E1: // left pending "00", right pending "1", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting single bit state is L0_R_E1
-	if (!bit(pL, iL++)) goto zero_R_E1; // test if L terminator
-	if (bit(pR, iR++)) goto L0_R1_E1; else goto L0_R0_E1; // extend R to balance `bit()`
-L1_R00_E1: // left pending "1", right pending "00", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting single bit state is L_R0_E1
-	if (!bit(pR, iR++)) goto L_zero_E1; // test if R terminator
-	if (bit(pL, iL++)) goto L1_R0_E1; else goto L0_R0_E1; // extend L to balance `bit()`
+	// as long as there are input bits
+	while (num) {
+		// extract next LSB from input
+		unsigned b = num & 1;
+		num >>= 1;
 
-	/*
-	 * Either one or both sides has maximum consecutive zero bits.
-	 * Double bit output
-	 */
-L00_R01_E1: // left pending "00", right pending "01", last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // after emitting double bit state is L_R_E1
-	if (!bit(pL, iL++)) goto zero_R_E1; // test if L terminator
-	if (bit(pR, iR++)) goto L_R1_E1; else goto L_R0_E1; // extend R to balance `bit()`
-L01_R00_E1: // left pending "01", right pending "00", last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // after emitting double bit state is L_R_E1
-	if (!bit(pR, iR++)) goto L_zero_E1; // test if R terminator
-	if (bit(pL, iL++)) goto L1_R_E1; else goto L0_R_E1; // extend L to balance `bit()`
-L00_R00_E1: // left pending "00", right pending "00", last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // emit double "0" and mandatory escape bit
-	if (!bit(pR, iR++)) goto L_zero_E1; // test if R terminator
-	if (bit(pL, iL++)) goto L1_R_E1; else goto L0_R_E1; // extend L
+		// inject into output
+		emit(pDest, bitpos++, b);
 
-	/*
-	 * Either side is terminator (infinite leading zeros)
-	 */
-zero_R_E1: // left zero, right empty, last emitted "1"
-	if (bit(pR, iR++)) goto zero_R1_E1; else goto zero_R0_E1; // extend R
-zero_R1_E1: // left zero, right pending "1", last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting bit state is zero_R_E1
-	if (bit(pR, iR++)) goto zero_R1_E1; else goto zero_R0_E1; // extend R
-zero_R0_E1: // left zero, right pending "0", last emitted "1"
-	if (bit(pR, iR++)) goto zero_R01_E1; else goto zero_R00_E1; // extend R
-zero_R01_E1: // left zero, right pending "01", last emitted "1"
-	emit(pDst, dstpos++, 0); // after emitting double bit state is zero_R_E1
-	emit(pDst, dstpos++, 1);
-	if (bit(pR, iR++)) goto zero_R1_E1; else goto zero_R0_E1; // extend R
-zero_R00_E1: // left zero, right pending "00", last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // emit double "0" and mandatory escape bit
-	if (!bit(pR, iR++)) return dstpos; // both terminated, done
-	if (bit(pR, iR++)) goto zero_R1_E1; else goto zero_R0_E1; // extend R
+		// update runlength
+		if (b != 0) {
+			// consecutive "1" can be unlimited in length
+			count = 0;
+		} else if (++count == N) {
+			// runlength limit reached, inject opposite polarity
+			emit(pDest, bitpos++, 1);
+			count = 0;
+		}
+	}
 
-L_zero_E1: // left empty, right zero, last emitted "1"
-	if (bit(pL, iL++)) goto L1_zero_E1; else goto L0_zero_E1; // extend R
-L1_zero_E1: // left pending "1", right zero, last emitted "1"
-	emit(pDst, dstpos++, 1); // after emitting bit state is zero_R_E1
-	if (bit(pL, iL++)) goto L1_zero_E1; else goto L0_zero_E1; // extend R
-L0_zero_E1: // left pending "0", right zero, last emitted "1"
-	if (bit(pL, iL++)) goto L01_zero_E1; else goto L00_zero_E1; // extend R
-L01_zero_E1: // left pending "01", right zero, last emitted "1"
-	emit(pDst, dstpos++, 0); // after emitting double bit state is zero_R_E1
-	emit(pDst, dstpos++, 1);
-	if (bit(pL, iL++)) goto L1_zero_E1; else goto L0_zero_E1; // extend R
-L00_zero_E1: // left pending "00", right zero, last emitted "1"
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 0);
-	emit(pDst, dstpos++, 1); // emit double "0" and mandatory escape bit
-	if (!bit(pL, iL++)) return dstpos; // both terminated, done
-	if (bit(pL, iL++)) goto L1_zero_E1; else goto L0_zero_E1; // extend L
+	// append terminator
+	while (N >= 0) {
+		emit(pDest, bitpos++, 0);
+		--N;
+	}
+
+	return bitpos;
+}
+
+/**
+ * Encode value into runlength-N, return string and length.
+ * NOTE: encoded number is unsigned
+ *
+ * @param {string} pSource - Start of sequence as string (LSB first).
+ * @param {number} N - runlength
+ * @return {int64_t} - The decoded value as variable length structurele. for demonstration purpose assuming it will fit in less that 64 bits.
+ */
+uint64_t decode(unsigned char *pSrc, unsigned bitpos, int N) {
+	unsigned count = 0; // current runlength (number of consecutive bits of same polarity)
+	uint64_t mask = 1; // current bit to merge with number
+	uint64_t num = 0; // number being decoded
+
+	// The condition is a failsafe as the runN terminator is the end condition
+	for (;;) {
+		// extract next LSB from input
+		uint64_t b = bit(pSrc, bitpos++);
+
+		// inject into output
+		if (b)
+			num |= mask;
+		mask <<= 1;
+
+		// update runlength
+		if (b != 0) {
+			// consecutive "1" can be unlimited in length
+			count = 0;
+		} else if (++count == N) {
+			// runlength reached, get next bit
+			b = bit(pSrc, bitpos++);
+			if (b == 0)
+				break; // N+1 consecutive bits of same polarity is terminator
+			count = 0;
+		}
+	}
+
+	return num;
 }
 
 unsigned char mem[512];
 unsigned pos;
 
 int main() {
-	pos = 0;
 
 	/*
-	 * L=0b1010
+	 * Test the function by trying all 12-bit possibilities per variable for "<left> OR <right>
 	 */
-	unsigned iL = pos;
-	emit(mem, pos++, 0);
-	printf("pos;%d\n", pos);
-	emit(mem, pos++, 1);
-	printf("pos;%d\n", pos);
-	emit(mem, pos++, 0);
-	emit(mem, pos++, 1);
-	emit(mem, pos++, 0); // terminator
-	emit(mem, pos++, 0);
-	emit(mem, pos++, 0);
+	unsigned lval, rval;
+	for (lval=0; lval < (1<<12); lval++) {
+		for (rval = 0; rval < (1 << 12); rval++) {
 
-	/*
-	 * R=0b1100
-	 */
-	unsigned iR = pos;
-	emit(mem, pos++, 0);
-	emit(mem, pos++, 0);
-	emit(mem, pos++, 1); // escape
-	emit(mem, pos++, 1);
-	emit(mem, pos++, 1);
-	emit(mem, pos++, 0); // terminator
-	emit(mem, pos++, 0);
-	emit(mem, pos++, 0);
+			// rewind memort
+			pos = 0;
 
-	/*
-	 * Perform `OR`
-	 */
-	unsigned newpos = OR(mem, pos, mem, iL, mem, iR);
-	printf("pos=%d newpos=%d\n", pos, newpos);
+			// encode <left>
+			unsigned iL = pos;
+			pos = encode(mem, pos, lval, 2);
+
+			// encode <right>
+			unsigned iR = pos;
+			pos = encode(mem, pos, rval, 2);
+
+			// perform `OR`
+			unsigned iOR = pos;
+			pos = OR(mem, iOR, mem, iL, mem, iR);
+
+			// extract
+			uint64_t answer;
+			answer = decode(mem, iOR, 2);
+
+			// encode answer to determine length
+			unsigned iAnswer = pos;
+			pos = encode(mem, pos, answer, 2);
+
+			/*
+			 * Compare
+			 */
+			if (answer != (lval | rval)) {
+				fprintf(stderr, "result error 0x%x OR 0x%x. Expected=0x%x Encountered 0x%x\n", lval, rval, lval | rval, answer);
+			} else if (iAnswer - iOR != pos - iAnswer) {
+				fprintf(stderr, "length error 0x%x OR 0x%x. Expected=%d Encountered %d\n", lval, rval, iAnswer - iOR, pos - iAnswer);
+			}
+
+			if (0) {
+				// display encoded answer
+				unsigned k;
+				for (k = iOR; k < iAnswer; k++)
+					putchar(bit(mem, k) ? '1' : '0');
+				putchar('\n');
+
+			}
+		}
+	}
 
 	return 0;
 }
