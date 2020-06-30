@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2020-06-30 01:19:40 Initial implementation of `OR` in `urun2.c`.
 2020-06-29 14:07:33 Added `ufrequency.c` for unsigned encoding.
                     Renamed `frequency.c` into `sfrequency.c` for signed encoding. 
 ```

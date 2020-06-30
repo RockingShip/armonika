@@ -19,7 +19,9 @@ m4/
 stamp-h1
 
 # generated files
-frequency
+sfrequency
+ufrequency
+urun2
 
 *.bak
 *.gch

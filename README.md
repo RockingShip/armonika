@@ -126,7 +126,7 @@ Using `N=2` are clearly not efficient and using `N>2` does not show significant 
 
 Taking `N=3` as default has an average of ~22 bits which is ~40% more storage than 16-bits binary encoded.
 
-For unsigned encoding:
+With unsigned encoding:
 
 | length | N = 2 | N = 3 | N = 4 | N = 5 | notes |
 |-------:|------:|------:|------:|------:|:------|
