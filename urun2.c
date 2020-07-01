@@ -7,6 +7,13 @@
  *
  * @date 2020-07-01 02:53:59
  * Previous implementation had the least number of conditionals/jumps. but the bitstream overhead. oo.
+ *
+ * @date 2020-07-01 14:41:14
+ * Note about shrink wrapping leading zeros of the result.
+ * Swallowing long lengths of leading zero to emit them all again in case a future "1" appears kills streaming.
+ * To make shrink-wrap semi-possible, save the bit position of the last emitted "1".
+ * On return, rewind to last "1" and append end-of-sequence marker.
+ * The rewind breaks streaming.
  */
 
 /*
@@ -36,7 +43,252 @@
 // this is next bit of the sequence
 #define emit(MEM, POS, BIT) ({ unsigned _pos=(POS); if (BIT) (MEM)[_pos>>3] |= 1<<(_pos&7); else (MEM)[_pos>>3] &= ~(1<<(_pos&7)); })
 
-unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical shift left
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned LSL(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+
+	/*
+	 * LSL is not fully async streaming. It needs to decode rval first to determine the shift count. Luckily the range of rval is usually small
+	 */
+
+	unsigned rval = 0; // number being decoded
+	unsigned mask = 1; // active bit in rval
+
+	// fast decode
+	while (rstate) {
+		rbit = bit(pR, iR++) ? 1 : 0;
+		rstate = rbit ? 1 : rstate << 1;
+
+		if (rbit)
+			rval |= mask;
+		mask <<= 1;
+
+		if (rstate == 4)
+			rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+	}
+
+	/*
+	 * emit `rval number of "0"
+	 */
+	while (rval > 0) {
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Emit "0"
+		 */
+		emit(pDst, dstpos++, 0);
+		estate <<= 1;
+
+		--rval;
+	}
+
+	/*
+	 * Copy lval to output
+	 */
+	while (lstate) {
+		/*
+		 * Load next lval bit
+		 */
+		lbit = bit(pL, iL++) ? 1 : 0;
+		lstate = lbit ? 1 : lstate << 1;
+
+		if (lstate == 4)
+			lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		ebit = lbit;
+		emit(pDst, dstpos++, ebit);
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	}
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical shift right
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned LSR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+
+	/*
+	 * LSR is not fully async streaming. It needs to decode rval first to determine the shift count. Lockily the range of rval is usually small
+	 */
+
+	unsigned rval = 0; // number being decoded
+	unsigned mask = 1; // active bit in rval
+
+	// fast decode
+	while (rstate) {
+		rbit = bit(pR, iR++) ? 1 : 0;
+		rstate = rbit ? 1 : rstate << 1;
+
+		if (rbit)
+			rval |= mask;
+		mask <<= 1;
+
+		if (rstate == 4)
+			rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+	}
+
+	/*
+	 * Swallow `rval` number of lval bits
+	 */
+	while (lstate && rval) {
+		lbit = bit(pL, iL++) ? 1 : 0;
+		lstate = lbit ? 1 : lstate << 1;
+
+		if (lstate == 4)
+			lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+
+		--rval;
+	}
+
+	/*
+	 * copy remainder of lval to output
+	 */
+	while (lstate) {
+		/*
+		 * Load next lval bit
+		 */
+		lbit = bit(pL, iL++) ? 1 : 0;
+		lstate = lbit ? 1 : lstate << 1;
+
+		if (lstate == 4)
+			lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		ebit = lbit;
+		emit(pDst, dstpos++, ebit);
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	}
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical AND
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned AND(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
 
 	// three pipelines, two for left/right operands one for the result.
 	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
@@ -44,6 +296,193 @@ unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL
 	unsigned lstate = 1, lbit;
 	unsigned rstate = 1, rbit;
 	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+
+	do {
+		/*
+		 * Two independent and parallel 'loops' to load next bit of sequence.
+		 * When runlength reached swallow escape bit.
+		 * Source optimize to have the least number of lvalues.
+		 */
+		if (lstate) {
+			lbit = bit(pL, iL++) ? 1 : 0;
+			lstate = lbit ? 1 : lstate << 1;
+
+			if (lstate == 4)
+				lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		if (rstate) {
+			rbit = bit(pR, iR++) ? 1 : 0;
+			rstate = rbit ? 1 : rstate << 1;
+
+			if (rstate == 4)
+				rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		ebit = lbit & rbit;
+		emit(pDst, dstpos++, ebit);
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	} while (lstate | rstate);
+	// lstate | rstate requires a merge ("|") and the vector is tested for zero.
+	// lstate || rstate requires two tests.
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical XOR
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+ unsigned XOR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	// three pipelines, two for left/right operands one for the result.
+	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
+	//
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+
+	do {
+		/*
+		 * Two independent and parallel 'loops' to load next bit of sequence.
+		 * When runlength reached swallow escape bit.
+		 * Source optimize to have the least number of lvalues.
+		 */
+		if (lstate) {
+			lbit = bit(pL, iL++) ? 1 : 0;
+			lstate = lbit ? 1 : lstate << 1;
+
+			if (lstate == 4)
+				lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		if (rstate) {
+			rbit = bit(pR, iR++) ? 1 : 0;
+			rstate = rbit ? 1 : rstate << 1;
+
+			if (rstate == 4)
+				rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		ebit = lbit ^ rbit;
+		emit(pDst, dstpos++, ebit);
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	} while (lstate | rstate);
+	// lstate | rstate requires a merge ("|") and the vector is tested for zero.
+	// lstate || rstate requires two tests.
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical OR
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+ unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	// three pipelines, two for left/right operands one for the result.
+	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
+	//
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
 
 	do {
 		/*
@@ -82,6 +521,10 @@ unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL
 		ebit = lbit | rbit;
 		emit(pDst, dstpos++, ebit);
 
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
 		/*
 		 * Emitting "1" resets the runlength counter
 		 */
@@ -90,6 +533,16 @@ unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL
 	} while (lstate | rstate);
 	// lstate | rstate requires a merge ("|") and the vector is tested for zero.
 	// lstate || rstate requires two tests.
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
 
 	/*
 	 * Keep emitting leading "0" until end-of-sequence complete.
@@ -186,53 +639,93 @@ unsigned char mem[512];
 unsigned pos;
 
 int main() {
+	setlinebuf(stdout);
 
 	/*
 	 * Test the function by trying all 12-bit possibilities per variable for "<left> OR <right>
 	 */
-	unsigned lval, rval;
-	for (lval=0; lval < (1<<12); lval++) {
-		for (rval = 0; rval < (1 << 12); rval++) {
+	unsigned round, lval, rval;
+	for (round=0; round<5; round++) {
+		// display round
+		// @formatter:off
+		switch (round) {
+		case 0: fputs("LSL\n", stdout); break;
+		case 1: fputs("LSR\n", stdout); break;
+		case 2: fputs("AND\n", stdout); break;
+		case 3: fputs("XOR\n", stdout); break;
+		case 4: fputs("OR\n", stdout); break;
+		}
+		// @formatter:on
 
-			// rewind memort
-			pos = 0;
+		for (lval = 0; lval < (1 << 12); lval++) {
+			for (rval = 0; rval < (1 << 12); rval++) {
 
-			// encode <left>
-			unsigned iL = pos;
-			pos = encode(mem, pos, lval, 2);
+				// rewind memort
+				pos = 0;
 
-			// encode <right>
-			unsigned iR = pos;
-			pos = encode(mem, pos, rval, 2);
+				// encode <left>
+				unsigned iL = pos;
+				pos = encode(mem, pos, lval, 2);
 
-			// perform `OR`
-			unsigned iOR = pos;
-			pos = OR(mem, iOR, mem, iL, mem, iR);
+				// encode <right>
+				unsigned iR = pos;
+				pos = encode(mem, pos, rval, 2);
 
-			// extract
-			uint64_t answer;
-			answer = decode(mem, iOR, 2);
+				// perform opcode and evaluate native
+				unsigned iOpcode = pos;
+				unsigned expected = 0;
+				switch (round) {
+				case 0:
+					if (rval > 20)
+						continue;
+					pos = LSL(mem, pos, mem, iL, mem, iR);
+					expected = lval << rval;
+					break;
+				case 1:
+					if (rval > 20)
+						continue;
+					pos = LSR(mem, pos, mem, iL, mem, iR);
+					expected = lval >> rval;
+					break;
+				case 2:
+					pos = AND(mem, pos, mem, iL, mem, iR);
+					expected = lval & rval;
+					break;
+				case 3:
+					pos = XOR(mem, pos, mem, iL, mem, iR);
+					expected = lval ^ rval;
+					break;
+				case 4:
+					pos = OR(mem, pos, mem, iL, mem, iR);
+					expected = lval | rval;
+					break;
+				};
 
-			// encode answer to determine length
-			unsigned iAnswer = pos;
-			pos = encode(mem, pos, answer, 2);
+				// extract
+				uint64_t answer;
+				answer = decode(mem, iOpcode, 2);
 
-			/*
-			 * Compare
-			 */
-			if (answer != (lval | rval)) {
-				fprintf(stderr, "result error 0x%x OR 0x%x. Expected=0x%x Encountered 0x%x\n", lval, rval, lval | rval, answer);
-			} else if (iAnswer - iOR != pos - iAnswer) {
-				fprintf(stderr, "length error 0x%x OR 0x%x. Expected=%d Encountered %d\n", lval, rval, iAnswer - iOR, pos - iAnswer);
-			}
+				// encode answer to determine length
+				unsigned iAnswer = pos;
+				pos = encode(mem, pos, answer, 2);
 
-			if (0) {
-				// display encoded answer
-				unsigned k;
-				for (k = iOR; k < iAnswer; k++)
-					putchar(bit(mem, k) ? '1' : '0');
-				putchar('\n');
+				/*
+				 * Compare
+				 */
+				if (answer != expected) {
+					fprintf(stderr, "result error 0x%x OPCODE 0x%x. Expected=0x%x Encountered 0x%x\n", lval, rval, expected, answer);
+				} else if (iAnswer - iOpcode != pos - iAnswer) {
+					fprintf(stderr, "length error 0x%x OPCODE 0x%x. Expected=%d Encountered %d\n", lval, rval, iAnswer - iOpcode, pos - iAnswer);
+				}
 
+				if (0) {
+					// display encoded answer
+					unsigned k;
+					for (k = iOpcode; k < iAnswer; k++)
+						putchar(bit(mem, k) ? '1' : '0');
+					putchar('\n');
+
+				}
 			}
 		}
 	}
