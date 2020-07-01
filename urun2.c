@@ -4,6 +4,9 @@
  * @date 2020-06-29 16:25:46
  *
  * Implementation of opcodes for "unsigned runlength-2" encoding.
+ *
+ * @date 2020-07-01 02:53:59
+ * Previous implementation had the least number of conditionals/jumps. but the bitstream overhead. oo.
  */
 
 /*
@@ -35,8 +38,68 @@
 
 unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
 
-#include "statedata.h"
+	// three pipelines, two for left/right operands one for the result.
+	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
+	//
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
 
+	do {
+		/*
+		 * Two independent and parallel 'loops' to load next bit of sequence.
+		 * When runlength reached swallow escape bit.
+		 * Source optimize to have the least number of lvalues.
+		 */
+		if (lstate) {
+			lbit = bit(pL, iL++) ? 1 : 0;
+			lstate = lbit ? 1 : lstate << 1;
+
+			if (lstate == 4)
+				lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		if (rstate) {
+			rbit = bit(pR, iR++) ? 1 : 0;
+			rstate = rbit ? 1 : rstate << 1;
+
+			if (rstate == 4)
+				rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		ebit = lbit | rbit;
+		emit(pDst, dstpos++, ebit);
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	} while (lstate | rstate);
+	// lstate | rstate requires a merge ("|") and the vector is tested for zero.
+	// lstate || rstate requires two tests.
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
 }
 
 /**

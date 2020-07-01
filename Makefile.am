@@ -3,16 +3,7 @@ EXTRA_DIST = \
 	LICENSE CHANGELOG.md README.md \
 	.gitignore
 
-MAINTAINERCLEANFILES = statedata.h
-BUILT_SOURCES = genstatedata
-
-bin_PROGRAMS = genstatedata sfrequency ufrequency urun2
-
-statedata.h : genstatedata.cc
-	./genstatedata > statedata.h
-
-# @date 2020-06-30 19:20:55
-genstatedata_SOURCES = genstatedata.cc
+bin_PROGRAMS = sfrequency ufrequency urun2
 
 # @date 2020-06-26 00:06:58
 sfrequency_SOURCES = sfrequency.c
