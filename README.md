@@ -18,6 +18,17 @@ The proposed encoding has these features:
  - Simple functional implementation of bitwise and integer arithmetic operators.
  - Simple hardware implementation.
 
+@date 2020-07-04 02:28:54
+
+This encoding gives two major benefits.
+- There is no maximum to the amount of storage you want to address.
+- Every value has an infinite number of leading "0" or "1"'s.
+Overflows will never occur because storage and encoding is variable-width.
+Being variable-width, strings no longer need a null terminator.
+end-of-sequence is embedded in the encoding of the value.
+The only thing needed to know is where the sequence ends, not how.
+Encounding is immune for "Y2K-bug" and "8-bit/64-bit compatible" issues.
+
 # Encoding/decoding scheme
 
 ```
@@ -157,6 +168,25 @@ With unsigned encoding:
 
 The average encoding length is somewhere between 20 and 22.
 With `N=2` the encoding has possibly the simplest implementation with a high yield.
+
+# Add/Subtract
+
+@date 2020-07-03 01:39:28
+
+Considering that add/subtract are the most basic arithmetic operator
+The only moment that raises an issue is when the result of the subtract is negative.
+Negative also reflects an active carry-out.
+
+The core logic of add/subtract is identical.
+
+Per bit:
+ - emit = carryin ^ left ^ right;
+ - carryout = carryin ? left | right : left & right;
+ 
+For ADD the initial carry-in is "0"
+For SUB the initial carry-in is "1" and right is bit-inverted.
+Implies that all subtracts can be rewritten as additions.
+With no subtract functionality being used, removed the use of an active carry-out.
 
 # Versioning
 

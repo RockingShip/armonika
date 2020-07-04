@@ -14,6 +14,16 @@
  * To make shrink-wrap semi-possible, save the bit position of the last emitted "1".
  * On return, rewind to last "1" and append end-of-sequence marker.
  * The rewind breaks streaming.
+ *
+ * @date 2020-07-04 22:20:15
+ *
+ * !! Abandoning this file.
+ *
+ * Negative numbers are too difficult to avoid for benefit that might be given.
+ * Appending the polarity after a (zero) end-of-sequence marker does not work as expected.
+ * Gather all experiences and evolve to signed-runlength-3 (srun3.c)
+ *
+ *
  */
 
 /*
@@ -40,8 +50,228 @@
 
 // what is value of next bit in the sequence
 #define bit(MEM, POS) ({ unsigned _pos=(POS); (MEM)[_pos>>3] & (1<<(_pos&7)); })
+#define nextraw(MEM, POS) ({ unsigned _pos=(POS); (MEM)[_pos>>3] & (1<<(_pos&7)); })
 // this is next bit of the sequence
 #define emit(MEM, POS, BIT) ({ unsigned _pos=(POS); if (BIT) (MEM)[_pos>>3] |= 1<<(_pos&7); else (MEM)[_pos>>3] &= ~(1<<(_pos&7)); })
+#define emitraw(MEM, POS, BIT) ({ unsigned _pos=(POS); if (BIT) (MEM)[_pos>>3] |= 1<<(_pos&7); else (MEM)[_pos>>3] &= ~(1<<(_pos&7)); })
+
+#define nextcooked(STATE, BIT, MEM, POS) do { \
+	if (STATE) { \
+		BIT = nextraw(MEM, POS) ? 1 : 0; \
+		STATE = BIT ? 1 : STATE << 1; \
+\
+		if (STATE == 4) { \
+                        STATE = nextraw(MEM, POS) ? 1 : 0; /* either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator. */ \
+               		if (!STATE)                              \
+				BIT = nextraw(MEM, POS) ? 1 : 0; /* directly after end-of-sequence is the polarity */ \
+		} \
+	} \
+} while (0)
+
+#define emitcooked(STATE, BIT, MEM, POS) do { \
+	/* Escape current streak when two consecutivee "0" have already been emitted. */ \
+	if (STATE == 4) { \
+		emit(MEM, POS, 1); \
+		STATE = 1; \
+	} \
+\
+	/* bit to emit */ \
+	emitraw(MEM, POS, BIT); \
+\
+	/* Emitting "1" resets the runlength counter */ \
+	STATE = BIT ? 1 : STATE << 1; \
+} while (0)
+
+/**
+ * @date 2020-07-02 23:08:47
+ *
+ * Add
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned ADD(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+	unsigned carry = 0;
+
+	do {
+		// Two independent and parallel 'loops' to load next bit of sequence.
+		nextcooked(lstate, lbit, pL, iL++);
+		nextcooked(rstate, rbit, pR, iR++);
+
+		// Operator
+		ebit = carry ^ lbit ^ rbit;
+		carry = carry ? lbit | rbit : lbit & rbit;
+
+		emitcooked(estate, ebit, pDst, dstpos++);
+
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+	} while (lstate | rstate);
+
+//	ebit = 0 ^ 0 ^ 0;
+//	carry = 0
+//
+//	ebit = 1 ^ 1 ^ 1;
+//	carry = 1
+//
+//	ebit = carry ^ 1;
+//	carry = carry ? 1 : 0;
+//
+
+	/*
+	 * Emit carry
+	 */
+	if (carry)
+		emitcooked(estate, 1, pDst, dstpos++);
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		// parity
+		emit(pDst, last1++, 0);
+		return last1;
+	} else {
+		/*
+		 * Keep emitting leading "0" until end-of-sequence complete.
+		 * Leading zeros can already be in effect as part of the result.
+		 */
+		do {
+			emit(pDst, dstpos++, 0);
+		} while ((estate <<= 1) != 8);
+
+		return dstpos;
+	}
+}
+
+/**
+ * @date 2020-07-02 23:59:07
+ *
+ * Subtract
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned SUB(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	unsigned lstate = 1, lbit;
+	unsigned rstate = 1, rbit;
+	unsigned estate = 1, ebit;
+	unsigned last1 = dstpos;
+	unsigned carry = 1;
+
+	do {
+		/*
+		 * Two independent and parallel 'loops' to load next bit of sequence.
+		 * When runlength reached swallow escape bit.
+		 * Source optimize to have the least number of lvalues.
+		 */
+		if (lstate) {
+			lbit = bit(pL, iL++) ? 1 : 0;
+			lstate = lbit ? 1 : lstate << 1;
+
+			if (lstate == 4)
+				lstate = bit(pL, iL++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		if (rstate) {
+			rbit = bit(pR, iR++) ? 1 : 0;
+			rstate = rbit ? 1 : rstate << 1;
+
+			if (rstate == 4)
+				rstate = bit(pR, iR++) ? 1 : 0; // either end-of-sequence on "0", knowing that two "0" already have neen emitted. the third is also a terminator.
+		}
+
+		/*
+		 * Escape current streak when two consecutivee "0" have already been emitted.
+		 * Do this before emitting data because if data were "0" it could collapse with the end-of-sequence
+		 */
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		/*
+		 * Operator
+		 */
+		rbit ^= 1;
+		ebit = carry ^ lbit ^ rbit;
+		carry = carry ? lbit | rbit : lbit & rbit;
+		emit(pDst, dstpos++, ebit);
+		// update position last data "1" for shrink-wrapping
+		if (ebit)
+			last1 = dstpos;
+
+		/*
+		 * Emitting "1" resets the runlength counter
+		 */
+		estate = ebit ? 1 : estate << 1;
+
+	} while (lstate | rstate);
+	// lstate | rstate requires a merge ("|") and the vector is tested for zero.
+	// lstate || rstate requires two tests.
+
+	carry ^= 1;
+	/*
+	 * Emit carry
+	 */
+	if (carry) {
+		if (estate == 4) {
+			emit(pDst, dstpos++, 1);
+			estate = 1;
+		}
+
+		// make it visual obvious
+		emit(pDst, dstpos++, 1);
+		emit(pDst, dstpos++, 1);
+		emit(pDst, dstpos++, 1);
+		emit(pDst, dstpos++, 1);
+		emit(pDst, dstpos++, 1);
+		last1 = dstpos;
+		estate = 1;
+	}
+
+	/*
+	 * In case shrink-wrapping enqabled, rewind to the last data-"1" anf append end-of-sequence marker
+	 */
+	if (1) {
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		emit(pDst, last1++, 0);
+		return last1;
+	}
+
+	/*
+	 * Keep emitting leading "0" until end-of-sequence complete.
+	 * Leading zeros can already be in effect as part of the result.
+	 */
+	do {
+		emit(pDst, dstpos++, 0);
+	} while ( (estate <<= 1) != 8);
+
+	return dstpos;
+
+}
 
 /**
  * @date 2020-07-01 22:52:29
@@ -593,6 +823,9 @@ unsigned encode(unsigned char *pDest, unsigned bitpos, uint64_t num, int N) {
 		--N;
 	}
 
+	// polarity
+	emit(pDest, bitpos++, 0);
+
 	return bitpos;
 }
 
@@ -649,11 +882,13 @@ int main() {
 		// display round
 		// @formatter:off
 		switch (round) {
-		case 0: fputs("LSL\n", stdout); break;
-		case 1: fputs("LSR\n", stdout); break;
-		case 2: fputs("AND\n", stdout); break;
-		case 3: fputs("XOR\n", stdout); break;
-		case 4: fputs("OR\n", stdout); break;
+		case 0: fputs("ADD\n", stdout); break;
+		case 1: continue; fputs("SUB\n", stdout); break;
+		case 2: fputs("LSL\n", stdout); break;
+		case 3: fputs("LSR\n", stdout); break;
+		case 4: fputs("AND\n", stdout); break;
+		case 5: fputs("XOR\n", stdout); break;
+		case 6: fputs("OR\n", stdout); break;
 		}
 		// @formatter:on
 
@@ -676,26 +911,34 @@ int main() {
 				unsigned expected = 0;
 				switch (round) {
 				case 0:
+					pos = ADD(mem, pos, mem, iL, mem, iR);
+					expected = lval + rval;
+					break;
+				case 1:
+					pos = SUB(mem, pos, mem, iL, mem, iR);
+					expected = lval - rval;
+					break;
+				case 2:
 					if (rval > 20)
 						continue;
 					pos = LSL(mem, pos, mem, iL, mem, iR);
 					expected = lval << rval;
 					break;
-				case 1:
+				case 3:
 					if (rval > 20)
 						continue;
 					pos = LSR(mem, pos, mem, iL, mem, iR);
 					expected = lval >> rval;
 					break;
-				case 2:
+				case 4:
 					pos = AND(mem, pos, mem, iL, mem, iR);
 					expected = lval & rval;
 					break;
-				case 3:
+				case 5:
 					pos = XOR(mem, pos, mem, iL, mem, iR);
 					expected = lval ^ rval;
 					break;
-				case 4:
+				case 6:
 					pos = OR(mem, pos, mem, iL, mem, iR);
 					expected = lval | rval;
 					break;
@@ -714,8 +957,10 @@ int main() {
 				 */
 				if (answer != expected) {
 					fprintf(stderr, "result error 0x%x OPCODE 0x%x. Expected=0x%x Encountered 0x%x\n", lval, rval, expected, answer);
+					return 1;
 				} else if (iAnswer - iOpcode != pos - iAnswer) {
 					fprintf(stderr, "length error 0x%x OPCODE 0x%x. Expected=%d Encountered %d\n", lval, rval, iAnswer - iOpcode, pos - iAnswer);
+					return 1;
 				}
 
 				if (0) {
