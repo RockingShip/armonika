@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2020-07-08 23:01:30 Added `ADD/SUB/LSL/LSR`.
 2020-07-01 22:40:54 Added `AND/XOR/OR`.
 2020-07-04 22:39:55 Abandoning `urun2.c` in favor of `srun3.c`.
 2020-07-01 22:40:54 Added `LSL/LSR/AND/XOR/OR`.

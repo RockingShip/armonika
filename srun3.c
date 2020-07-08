@@ -130,7 +130,7 @@ int tick = 0;
  * @param {number} POS - bit-position
  */
 #define emitEOS(STATE, LAST, BIT, MEM, POS) do {		\
-	/* keep emitting until maximum length reached */	\
+	/* keep emitting until maximum run-length reached */	\
 	while (!(STATE & (1 << RUNN)) || LAST != BIT)		\
 		emitcooked(STATE, LAST, BIT, MEM, POS);		\
 								\
@@ -194,7 +194,7 @@ int64_t decode(unsigned char *pSrc, unsigned bitpos) {
 	// The condition is a failsafe as the runN terminator is the end condition
 	do {
 		nextcooked(state, b, pSrc, bitpos);
-		num |= b << numlen;
+		num |= (uint64_t) b << numlen;
 		numlen++;
 	} while (state);
 
@@ -203,6 +203,190 @@ int64_t decode(unsigned char *pSrc, unsigned bitpos) {
 
 	return num;
 }
+
+/**
+ * @date 2020-07-08 18:56:29
+ *
+ * Streaming ADD
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned ADD(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	// three pipelines, two for left/right operands one for the result.
+	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
+	//
+	unsigned lstate = 1, lbit = 0;
+	unsigned rstate = 1, rbit = 0;
+	unsigned estate = 1, ebit, elast = 0;
+	unsigned carry = 0;
+
+	do {
+		// load next data bit of input pipelines
+		nextcooked(lstate, lbit, pL, iL);
+		nextcooked(rstate, rbit, pR, iR);
+
+		// operator
+		ebit = carry ^ lbit ^ rbit;
+		carry = carry ? lbit | rbit : lbit & rbit;
+
+		// emit operator result
+		emitcooked(estate, elast, ebit, pDst, dstpos);
+	} while (lstate || rstate);
+
+	// operator on final polarity
+	ebit = carry ^ lbit ^ rbit;
+
+	// end-of-sequence
+	emitEOS(estate, elast, ebit, pDst, dstpos);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-08 18:56:29
+ *
+ * Streaming SUB
+ *
+ * NOTE: identical to `ADD` except right-hand-side and carry are inverted
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned SUB(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	// three pipelines, two for left/right operands one for the result.
+	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
+	//
+	unsigned lstate = 1, lbit = 0;
+	unsigned rstate = 1, rbit = 0;
+	unsigned estate = 1, ebit, elast = 0;
+	unsigned carry = 1;
+
+	do {
+		// load next data bit of input pipelines
+		nextcooked(lstate, lbit, pL, iL);
+		nextcooked(rstate, rbit, pR, iR);
+
+		// operator
+		ebit = carry ^ lbit ^ rbit ^ 1;
+		carry = carry ? lbit | (rbit ^ 1) : lbit & (rbit ^ 1);
+
+		// emit operator result
+		emitcooked(estate, elast, ebit, pDst, dstpos);
+	} while (lstate || rstate);
+
+	// operator on final polarity
+	ebit = (carry ^ 1) ^ lbit ^ rbit;
+
+	// end-of-sequence
+	emitEOS(estate, elast, ebit, pDst, dstpos);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-01 22:52:29
+ *
+ * Logical shift left
+ *
+ * Left-hand-side is streaming
+ * Right-hand-size is enumerated and large values can critically impact operations.
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned LSL(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	unsigned lstate = 1, lbit;
+	unsigned estate = 1, ebit, elast = 0;
+
+	/*
+	 * decode rval
+	 */
+	int rval;
+	rval = decode(pR, iR);
+
+	/*
+	 * emit `rval` number of "0"
+	 */
+	while (rval > 0) {
+		emitcooked(estate, elast, 0, pDst, dstpos);
+		--rval;
+	}
+
+	/*
+	 * Copy lval to output
+	 */
+	do {
+		nextcooked(lstate, lbit, pL, iL);
+		emitcooked(estate, elast, lbit, pDst, dstpos);
+	} while (lstate);
+
+	// end-of-sequence
+	emitEOS(estate, elast, lbit, pDst, dstpos);
+
+	return dstpos;
+}
+
+/**
+ * @date 2020-07-08 13:54:49
+ *
+ * Logical shift right
+ *
+ * Left-hand-side is streaming
+ * Right-hand-size is enumerated and large values can critically impact operations.
+ *
+ * @param pDst 	 bit-memory base of result
+ * @param dstpos - bit position of result
+ * @param pL - bit-memory base of left-hand-side
+ * @param iL - bit position of left-hand-side
+ * @param pR - bit-memory base of right-hand-side
+ * @param iR - bit position of right-hand-side
+ * @return dstpos + encoded-length
+ */
+unsigned LSR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+
+	unsigned lstate = 1, lbit;
+	unsigned estate = 1, ebit, elast = 0;
+
+	/*
+	 * decode rval
+	 */
+	int rval;
+	rval = decode(pR, iR);
+
+	/*
+	 * Copy lval to output skipping first `rval` bits
+	 */
+	do {
+		nextcooked(lstate, lbit, pL, iL);
+		if (--rval < 0)
+			emitcooked(estate, elast, lbit, pDst, dstpos);
+	} while (lstate);
+
+	// end-of-sequence
+	emitEOS(estate, elast, lbit, pDst, dstpos);
+
+	return dstpos;
+}
+
 
 /**
  * @date 2020-07-08 01:15:35
@@ -459,11 +643,11 @@ int main() {
 		switch (round) {
 		case 0: continue; fputs("MUL\n", stdout); break;
 		case 1: continue; fputs("DIV\n", stdout); break;
-		case 2: continue;  fputs("MOD\n", stdout); break;
-		case 3: continue; fputs("ADD\n", stdout); break;
-		case 4: continue; fputs("SUB\n", stdout); break;
-		case 5: continue; fputs("LSL\n", stdout); break;
-		case 6: continue; fputs("LSR\n", stdout); break;
+		case 2: continue; fputs("MOD\n", stdout); break;
+		case 3: fputs("ADD\n", stdout); break;
+		case 4: fputs("SUB\n", stdout); break;
+		case 5: fputs("LSL\n", stdout); break;
+		case 6: fputs("LSR\n", stdout); break;
 		case 7: fputs("AND\n", stdout); break;
 		case 8: fputs("XOR\n", stdout); break;
 		case 9: fputs("OR\n", stdout); break;
@@ -509,23 +693,23 @@ int main() {
 					expected = lval + rval;
 					break;
 				case 3:
-//					pos = ADD(mem, pos, mem, iL, mem, iR);
+					pos = ADD(mem, pos, mem, iL, mem, iR);
 					expected = lval + rval;
 					break;
 				case 4:
-//					pos = SUB(mem, pos, mem, iL, mem, iR);
+					pos = SUB(mem, pos, mem, iL, mem, iR);
 					expected = lval - rval;
 					break;
 				case 5:
 					if (rval < 0 || rval > 20)
 						continue;
-//					pos = LSL(mem, pos, mem, iL, mem, iR);
+					pos = LSL(mem, pos, mem, iL, mem, iR);
 					expected = lval << rval;
 					break;
 				case 6:
 					if (rval < 0 || rval > 20)
 						continue;
-//					pos = LSR(mem, pos, mem, iL, mem, iR);
+					pos = LSR(mem, pos, mem, iL, mem, iR);
 					expected = lval >> rval;
 					break;
 				case 7:
@@ -546,10 +730,6 @@ int main() {
 				int64_t answer;
 				answer = decode(mem, iOpcode);
 
-				// encode answer to determine length
-				unsigned iAnswer = pos;
-				pos = encode(mem, pos, answer);
-
 				/*
 				 * Compare
 				 */
@@ -559,6 +739,10 @@ int main() {
 				}
 
 				if (0) {
+					// encode answer to determine length
+					unsigned iAnswer = pos;
+					pos = encode(mem, pos, answer);
+
 					// display encoded answer
 					int k;
 					for (k = iOpcode; k < iAnswer; k++)
