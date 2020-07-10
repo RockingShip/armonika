@@ -6,9 +6,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [Release 1.1.0] 2020-07-10 22:48:53
+
+Positive+Negative numbers indicated by polarity end-of-sequence marker.
+`ADD/SUB/LSL/LSR/AND/XOR/OR` operators.
+Full Streaming except for `LSL/LSR` right-hand-side.
+
 ```
 2020-07-08 23:01:30 Added `ADD/SUB/LSL/LSR`.
-2020-07-01 22:40:54 Added `AND/XOR/OR`.
+2020-07-07 22:40:54 Added `AND/XOR/OR`.
 2020-07-04 22:39:55 Abandoning `urun2.c` in favor of `srun3.c`.
 2020-07-01 22:40:54 Added `LSL/LSR/AND/XOR/OR`.
 2020-07-01 12:57:42 Third implementation of `OR` in `urun2.c` using loops.
@@ -20,8 +26,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Release 1.0.0] 2020-06-29 13:23:01
 
-Basic proof of concept.  
-Signed variable-width numbers with configurable runlength terminator.  
+Basic proof of concept.
+Signed variable-width numbers with configurable runlength terminator.
 
 ```
 2020-06-29 13:03:05 Added support for negative numbers.
