@@ -9,10 +9,10 @@ bin_PROGRAMS = sfrequency srun3 ufrequency urun2
 sfrequency_SOURCES = sfrequency.c
 
 # @date 2020-07-04 22:55:00
-srun3_SOURCES = srun3.c
+srun3_SOURCES = srun3.cc
 
 # @date 2020-06-29 14:07:33
 ufrequency_SOURCES = ufrequency.c
 
 # @date 2020-06-30 00:26:04
-urun2_SOURCES = urun2.c statedata.h
+urun2_SOURCES = urun2.c
