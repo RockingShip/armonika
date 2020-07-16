@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2020-07-16 23:04:20 Added `div.c` to research streaming `DIV`.
 2020-07-12 23:00:59 Upgraded `srun3` with memory port (sequential access) and `ALU` for core opcodes/instructions.
 2020-07-10 23:35:46 Renamed `srun3.c` into `srun3.cc`.
 ```
