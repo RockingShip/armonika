@@ -1,5 +1,7 @@
+//#pragma GCC optimize ("O0") // optimize on demand
+
 /*
- * srun3.c
+ * srun3.cc
  *
  * @date 2020-07-04 22:55:00
  *
@@ -55,467 +57,694 @@
 // maximum runlength before escaping
 #define RUNN 3
 
+/*
+ * @date  2020-07-12 22:58:38
+ * 
+ * State context/namespace to read sequential memory
+ * 
+ * @date 2020-07-14 01:29:17
+ * 
+ * Two shift-registers to determine length of consecutive same polarity.
+ * Each with an active bit for positive and negative polarity.
+ * The active bit determines the length:
+ *   - is repositioned to the head of the queue. (switch)
+ *   or
+ *   - shifted through the queue. (same)
+ * At a certain moment it triggers an arming alert.
+ * If the next bit has the same polarity, it indicates end-of-sequence [value of polarity will continue forever].
+ * Otherwise mandatory flip polarity.
+ * The flip counts as length 1.
+ * 
+ * @typedef {object} INBIT
+ */
+struct INBIT {
+
+	/*
+	 * @date  2020-07-12 23:00:59
+	 * 
+	 * State of the input port.
+	 * Contains 2 pieces of information:
+	 *   - start/stop state. When non-zero the port will read and process bits read from sequential memory.
+	 *   - shift register containing a single bit. 
+	 * Starting at bit 0, the bit number indicates the number of consecutive same-polarity bits already read.
+	 */
+	unsigned state;
+
+	/*
+	 * @date 2020-07-12 23:05:38
+	 * 
+	 * Value of decoded bit.
+	 * Using `bool` to mark that it conceptually contains a single bit, independent of the implementation.
+	 */
+	bool bit;
+
+	/*
+	 * @date 2020-07-14 22:53:18
+	 * 
+	 * Memory base address. Addressing is relative to bit 0
+	 */
+	unsigned char *const pBase;
+
+	/*
+	 * @date 2020-07-12 23:06:31
+	 * 
+	 * Memory is accessed as groups of 8 bit.
+	 * Pointer to current byte,
+	 */
+	unsigned char *pMem;
+
+	/*
+	 * @date 2020-07-12 23:08:52
+	 * 
+	 * Shift register containing bit to indicate active bit within the byte.
+	 * On each read the bit is left-rotated one position. 
+	 * On wrap, increment memory pointer to next position.
+	 */
+	unsigned char mask;
+
+	/*
+	 * @date 2020-07-12 23:23:42
+	 * 
+	 * Constructor/Initialise
+	 */
+	inline INBIT(unsigned char *pBase) : pBase(pBase) {
+		this->state = 0; // stop state
+		this->pMem = NULL; // current memory location is undefined
+		this->mask = 0x01; // Set a single bit
+	}
+
+	/*
+	 * @date  2020-07-13 22:34:13
+	 * 
+	 * reset state and set address of first bit of sequential memory
+	 */
+	inline void start(unsigned pos) {
+		this->pMem = this->pBase + (pos >> 3); // in which byte is active bit located
+		this->mask = 1 << (pos & 7); // set position of active bit;
+		this->state = 1; // start machine and indicate that zero bits have been processed (bit0==1)
+		this->bit = 0;
+	}
+
+	/*
+	 * @date 2020-07-12 23:26:55
+	 * 
+	 * Read and return next raw bit from memory
+	 * 
+	 * NOTE: When post-incrementing the active bit, the read value needs to be temporary stored while the increment is in progress.
+	 *       Not using a temporary with software requires pre-increment instead of post-increment
+	 *       Not using a temporary with hardware the increment can be performed in parallel while the read bit is being processed
+	 *       
+	 * NOTE: `gcc` on `x86` generates same code complexity with and without the temporary.
+	 *       Using post-increment with temporary.  
+	 */
+	inline unsigned nextraw(void) {
+
+		/*
+		 * Extract value of active bit from memory
+		 * Note: Two possible implementations:
+		 *       `bit = (*pMem & mask) ? 1 : 0;` 
+		 *       	is nasty because it (might) generate flow-control instructions.
+		 *       	is nice because `mask` is a shift register.
+		 *       `bit = (*pMem >> shift);` 
+		 *       	is nasty because `shift` is an enumerated value (thus binary encoded).
+		 *       	is nice because no flow-control instructions.
+		 *       	
+		 * For x86 platform the first variant generates `testb/setne` (no flow-control). Using That.
+		 */
+		unsigned t = (*pMem & mask) ? 1 : 0;
+
+		// shift/rotate the bit in `mask` to mark next active bit
+		mask = mask << 1 | mask >> 7;
+
+		// When bit rotates, bump memory pointer
+		// do not use 'if (mask & 1) pMem++;` because that generates flow-control instructions
+		pMem += (mask & 1);
+
+		// return temporary
+		return t;
+	}
+
+	/*
+	 * @date 2020-07-12 23:57:22
+	 * 
+	 * Decode next bit from memory
+	 */
+	inline void nextbit(void) {
+		// leave `bit` untouched when in `stop` state
+		if (!state)
+			return;
+
+		// test for arming of end-of-sequence marker
+		if (state & (1 << RUNN)) {
+			/*
+			 * ARMED, next bit opposite = escape, next bit same = EOS
+			 */
+			state = nextraw() ^ bit;
+			if (!state)
+				return; // end-of-sequence. DO NOT read next bit
+			bit ^= 1; // mandatory polarity switch
+			state <<= 1; // bit is first of run. state should be "1<<1"
+		}
+
+		// read next bit from sequential memory and test if there is a polarity switch
+		if (bit != nextraw()) {
+			/*
+			 * Opposite polarity
+			 */
+			bit ^= 1; // invert polarity
+			state = 1; // reset state shift-register
+		}
+
+		// Bump the state shift-register indicating the increment of consecutive same-value bits
+		state <<= 1;
+	}
+
+	/**
+	 * @date 2020-07-13 22:06:38
+	 * 
+	 * Encode value into runlength-N, return string and length.
+	 * NOTE: encoded number is unsigned
+	 *
+	 * @param {string} pSrc - bit-addressable memory (LSB emitted first).
+	 * @param {number} bitpos - bit-position
+	 * @return {int64_t} - The decoded value as variable length structure. For demonstration purpose assuming it will fit in less that 64 bits.
+	 */
+	inline int64_t decode(unsigned pos) {
+		int64_t num = 0; // fixed-width number being decoded
+		unsigned numlen = 0; // length of fixed-width `num` in bits
+
+		// start engine
+		start(pos);
+
+		// The condition is a failsafe as the runN terminator is the end condition
+		do {
+			nextbit();
+			num |= (uint64_t) bit << numlen;
+			numlen++;
+		} while (state);
+
+		// fill upper bits of resulting fixed-width number with polarity of end-of-sequence
+		num |= -((uint64_t) bit << numlen);
+
+		return num;
+	}
+
+};
+
+/*
+ * @date 2020-07-14 01:08:08
+ * 
+ * State context/namespace to write sequential memory
+ *
+ * @typedef {object} OUTBIT
+ */
+struct OUTBIT {
+
+	/*
+	 * @date 2020-07-14 01:10:00
+	 * 
+	 * State of port as a shift register containing a single bit. 
+	 * Starting at bit 0, the bit number indicates the number of consecutive same-polarity bits already written.
+	 */
+	unsigned state;
+
+	/*
+	 * @date 2020-07-14 01:10:38
+	 * 
+	 * Value of last encoded bit written
+	 * Using `bool` to mark that it conceptually contains a single bit, independent of the implementation.
+	 */
+	bool bit;
+
+	/*
+	 * @date 2020-07-14 22:53:18
+	 * 
+	 * Memory base address. Addressing is relative to bit 0
+	 */
+	unsigned char *const pBase;
+
+	/*
+	 * @date 2020-07-12 23:06:31
+	 * 
+	 * Memory is accessed as groups of 8 bit.
+	 * Pointer to current byte,
+	 */
+	unsigned char *pMem;
+
+	/*
+	 * @date 2020-07-14 01:11:24
+	 * 
+	 * Shift register containing bit to indicate active bit within the byte.
+	 * On each write the bit is left-rotated one position. 
+	 * On wrap, increment memory pointer to next position.
+	 */
+	unsigned char mask;
+
+	/*
+	 * @date 2020-07-14 01:11:37
+	 * 
+	 * Constructor/Initialise
+	 */
+	inline OUTBIT(unsigned char *pBase) : pBase(pBase) {
+		state = 0; // stop state
+		bit = 0; // last decoded bits
+		pMem = NULL; // Memory location is undefined
+		mask = 0x01; // Set a single bit
+	}
+
+	/*
+	 * @date 2020-07-14 01:12:47
+	 * 
+	 * reset state and set address of first bit of sequential memory
+	 */
+	inline void start(unsigned pos) {
+		this->bit = 0; // not emitted but well known initial value
+		this->pMem = pBase + (pos >> 3); // in which byte is active bit located
+		this->mask = 1 << (pos & 7); // set position of active bit;
+		this->state = 1; // state is nothing previously emitted (bit0 set)
+	}
+
+	/*
+	 * @date 2020-07-14 21:03:57
+	 * 
+	 * Return current position of bit/sequential memory
+	 */
+	unsigned getpos(void) {
+		// bit offset = byte offset * 8 + countTrailingZero(mask)
+		return (this->pMem - this->pBase) * 8 + __builtin_ctz(mask);
+	}
+
+	/*
+	 * @date 2020-07-14 20:32:49
+	 */
+	inline void emitraw(bool b) {
+		// set/clear memory bit
+		if (b)
+			*pMem |= mask;
+		else
+			*pMem &= ~mask;
+
+		// shift/rotate the bit in `mask` to mark next active bit
+		mask = mask << 1 | mask >> 7;
+
+		// When bit rotates, bump memory pointer
+		// do not use 'if (mask & 1) pMem++;` because that generates flow-control instructions
+		pMem += (mask & 1);
+	}
+
+	/*
+	 * @date 2020-07-14 20:36:02
+	 */
+	inline void emitbit(bool b) {
+		// if end-of-sequence is armed, emit mandatory escape
+		if (state & (1 << RUNN)) {
+			bit ^= 1; // flip polarity
+			emitraw(bit); // emit polarity switch
+			state = 1 << 1; // state = 1 bit emitted
+		}
+
+		// emit bit
+		emitraw(b);
+
+		// bump state
+		state = bit ^ b
+			? 1 << 1 // switching polarity, 1 bit emitted
+			: state << 1; // shift active bit
+
+		// remember last emitted bit
+		bit = b;
+	}
+
+	/*
+	 * @date 2020-07-15 01:21:22
+	 * 
+	 * Emit an armed end-of-sequence marker
+	 * 
+	 * Repeat emitting `value` until maximum run-length reached.
+	 * This can generate 0 to RUNN-1 bits.
+	 * If `value` is opposite polarity then emit a complete marker.   
+	 */
+	inline void emitEOSS(bool polarity) {
+		while (!(state & (1 << RUNN)) || bit != polarity)
+			emitbit(polarity);
+	}
+
+	/**
+	 * Encode signed value
+	 *
+	 * @param {string} pDest - bit-addressable memory (LSB emitted first).
+	 * @param {number} bitpos - bit-position
+	 * @param {number} num - signed value
+	 * @return {number} - length including terminator.
+	 */
+	inline void encode(unsigned pos, int64_t num) {
+		// start the engine
+		start(pos);
+
+		// as long as there are input bits
+		while (num != 0 && num != -1) {
+			// inject next LSB bit to output
+			emitbit(num & 1);
+
+			// bump binary decoding
+			num >>= 1; // NOTE: arithmetic shift leaves sign-bit untouched
+		}
+
+		// end-of-sequence polarity
+		num &= 1;
+
+		// Buildup leading bits until maximum run-length reached
+		emitEOSS(num);
+
+		// finalise end-of-sequence with same-polarity
+		emitraw(bit);
+	}
+
+};
+
+
 // timer tick
 int tick = 0;
 
-// what is value of next bit in the sequence
-#define nextraw(MEM, POS) ({ unsigned _pos=(POS); ((MEM)[_pos>>3] >> (_pos&7)) & 1; })
-// write next bit of the sequence. Old value is undefined and needs explicit set/clear.
-#define emitraw(MEM, POS, BIT) ({ unsigned _pos=(POS); if (BIT) (MEM)[_pos>>3] |= 1<<(_pos&7); else (MEM)[_pos>>3] &= ~(1<<(_pos&7)); })
-
 /**
- * Read next input bit, optionally swallowing any escaping markers
+ * @date 2020-07-15 00:52:43
  *
- * @param {number} STATE - state of runlength counter
- * @param {number} BIT - read bit. NOTE: do not change, also last read bit
- * @param {number} MEM - bit-addressable memory
- * @param {number} POS - bit-position
- * @return {number} - read data-bit
+ * Operatore/instructions
  */
-#define nextcooked(STATE, BIT, MEM, POS) do {			\
-	if (STATE) {						\
-		if (BIT == nextraw(MEM, POS++)) {		\
-			/* same polarity */			\
-			STATE <<= 1; /* bump counter */		\
-								\
-			/* test for escape bit */		\
-			if (STATE & (1 << RUNN)) {		\
-				/* opposite bit = escape, same bit = EOS */	\
-				STATE = nextraw(MEM, POS++) ^ BIT;		\
-			}					\
-		} else {					\
-			/* opposite polarity */			\
-			BIT = BIT ^ 1; /* invert */		\
-			STATE = 2; /* first bit of sequence */	\
-		}						\
-	}							\
-} while (0)
-
-/**
- * Emit the next output bit, injecting an escape after two consecutive bits.
- *
- * @param {number} STATE - state of runlength counter
- * @param {number} LAST - last emitted bit
- * @param {number} BIT - bit to emit
- * @param {number} MEM - bit-addressable memory
- * @param {number} POS - bit-position
- */
-#define emitcooked(STATE, LAST, BIT, MEM, POS) do { \
-	/* test if output streak needs to be escaped */		\
-	if (STATE & (1 << RUNN)) {				\
-		emitraw(MEM, POS++, LAST ^ 1); /* opposite polarity */	\
-		STATE = 1; /* reset sequence */			\
-	}							\
-								\
-	/* bit to emit */					\
-	emitraw(MEM, POS++, BIT);				\
-								\
-	STATE = LAST ^ BIT ?					\
-		2 /* switching polarity, first bit of sequence */	\
-	      :							\
-		STATE << 1; /* bump counter */ ;		\
-								\
-	/* remember last emitted bit */				\
-	LAST = BIT;						\
-} while (0)
-
-/**
- * Emit end-of-sequence marker
- * Keep emitting leading bits until maximum run-length reached followed by terminator.
- *
- * @param {number} STATE - state of runlength counter
- * @param {number} LAST - last emitted bit
- * @param {number} BIT - polarity
- * @param {number} MEM - bit-addressable memory
- * @param {number} POS - bit-position
- */
-#define emitEOS(STATE, LAST, BIT, MEM, POS) do {		\
-	/* keep emitting until maximum run-length reached */	\
-	while (!(STATE & (1 << RUNN)) || LAST != BIT)		\
-		emitcooked(STATE, LAST, BIT, MEM, POS);		\
-								\
-	/* finalise end-of-sequence */				\
-	emitraw(MEM, POS++, BIT);				\
-} while (0)
-
-
-/**
- * Encode signed value
- *
- * @param {string} pDest - bit-addressable memory (LSB emitted first).
- * @param {number} bitpos - bit-position
- * @param {number} num - signed value
- * @return {number} - length including terminator.
- */
-unsigned encode(unsigned char *pDest, unsigned bitpos, int64_t num) {
-	unsigned state = 1; // reset sequence
-	unsigned last = 0; // initial value not important as sequence is reset
-
-	// as long as there are input bits
-	while (num != 0 && num != -1) {
-		// extract next LSB from input
-		unsigned b = num & 1;
-		num >>= 1; // NOTE: arithmetic shift leaves sign-bit untouched
-
-		// inject into output
-		emitcooked(state, last, b, pDest, bitpos);
-	}
-
-	// end-of-sequence polarity
-	num &= 1;
+struct ALU {
 
 	/*
-	 * Buildup leading bits until maximum run-length reached
-	 * It is safe to use bit0 of `num` as polarity
+	 * @date 2020-07-08 18:56:29
+	 *
+	 * Streaming ADD
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
 	 */
-	while (!(state & (1 << RUNN)) || last != num)
-		emitcooked(state, last, num, pDest, bitpos);
+	inline void ADD(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-	// finalise end-of-sequence
-	emitraw(pDest, bitpos++, num);
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+		R.start(iR);
 
-	return bitpos;
-}
+		bool ebit = 0;
+		bool carry = 0;
 
-/**
- * Encode value into runlength-N, return string and length.
- * NOTE: encoded number is unsigned
- *
- * @param {string} pSrc - bit-addressable memory (LSB emitted first).
- * @param {number} bitpos - bit-position
- * @return {int64_t} - The decoded value as variable length structure. For demonstration purpose assuming it will fit in less that 64 bits.
- */
-int64_t decode(unsigned char *pSrc, unsigned bitpos) {
-	unsigned state = 1; // reset sequence
-	unsigned b = 0;
-	int64_t num = 0; // number being decoded
-	unsigned numlen = 0; // length of `num` in bits
+		do {
+			// load next data bit of input pipelines
+			L.nextbit();
+			R.nextbit();
 
-	// The condition is a failsafe as the runN terminator is the end condition
-	do {
-		nextcooked(state, b, pSrc, bitpos);
-		num |= (uint64_t) b << numlen;
-		numlen++;
-	} while (state);
+			// operator SUB equals ADD(L,R^!) with inverted carry 
+			ebit = carry ^ L.bit ^ R.bit;
+			carry = carry ? L.bit | R.bit : L.bit & R.bit;
 
-	// fill upper bits of resulting fixed-width number with polarity of end-of-sequence
-	num |= -((uint64_t) b << numlen);
+			// emit operator result
+			out.emitbit(ebit);
+		} while (L.state || R.state);
 
-	return num;
-}
+		// operator on final polarity
+		bool polarity = carry ^ L.bit ^ R.bit;
 
-/**
- * @date 2020-07-08 18:56:29
- *
- * Streaming ADD
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned ADD(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+		/*
+		 * @date 2020-07-15 12:11:26
+		 * The final carry(`ebit`) needs to be emitted which makes the result 1 bit longer.
+		 * Piggyback end-of-sequence-polarity of current streak of same polarity.
+		 * Let the caller finalise the end-of-sequence.
+		 */
+		out.emitEOSS(polarity);
 
-	// three pipelines, two for left/right operands one for the result.
-	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
-	//
-	unsigned lstate = 1, lbit = 0;
-	unsigned rstate = 1, rbit = 0;
-	unsigned estate = 1, ebit, elast = 0;
-	unsigned carry = 0;
-
-	do {
-		// load next data bit of input pipelines
-		nextcooked(lstate, lbit, pL, iL);
-		nextcooked(rstate, rbit, pR, iR);
-
-		// operator
-		ebit = carry ^ lbit ^ rbit;
-		carry = carry ? lbit | rbit : lbit & rbit;
-
-		// emit operator result
-		emitcooked(estate, elast, ebit, pDst, dstpos);
-	} while (lstate || rstate);
-
-	// operator on final polarity
-	ebit = carry ^ lbit ^ rbit;
-
-	// end-of-sequence
-	emitEOS(estate, elast, ebit, pDst, dstpos);
-
-	return dstpos;
-}
-
-/**
- * @date 2020-07-08 18:56:29
- *
- * Streaming SUB
- *
- * NOTE: identical to `ADD` except right-hand-side and carry are inverted
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned SUB(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
-
-	// three pipelines, two for left/right operands one for the result.
-	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
-	//
-	unsigned lstate = 1, lbit = 0;
-	unsigned rstate = 1, rbit = 0;
-	unsigned estate = 1, ebit, elast = 0;
-	unsigned carry = 1;
-
-	do {
-		// load next data bit of input pipelines
-		nextcooked(lstate, lbit, pL, iL);
-		nextcooked(rstate, rbit, pR, iR);
-
-		// operator
-		ebit = carry ^ lbit ^ rbit ^ 1;
-		carry = carry ? lbit | (rbit ^ 1) : lbit & (rbit ^ 1);
-
-		// emit operator result
-		emitcooked(estate, elast, ebit, pDst, dstpos);
-	} while (lstate || rstate);
-
-	// operator on final polarity
-	ebit = (carry ^ 1) ^ lbit ^ rbit;
-
-	// end-of-sequence
-	emitEOS(estate, elast, ebit, pDst, dstpos);
-
-	return dstpos;
-}
-
-/**
- * @date 2020-07-01 22:52:29
- *
- * Logical shift left
- *
- * Left-hand-side is streaming
- * Right-hand-size is enumerated and large values can critically impact operations.
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned LSL(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
-
-	unsigned lstate = 1, lbit;
-	unsigned estate = 1, ebit, elast = 0;
-
-	/*
-	 * decode rval
-	 */
-	int rval;
-	rval = decode(pR, iR);
-
-	/*
-	 * emit `rval` number of "0"
-	 */
-	while (rval > 0) {
-		emitcooked(estate, elast, 0, pDst, dstpos);
-		--rval;
+		// finalise end-of-sequence
+		out.emitraw(polarity);
 	}
 
 	/*
-	 * Copy lval to output
+	 * @date 2020-07-08 18:56:29
+	 *
+	 * Streaming SUB
+	 *
+	 * NOTE: identical to `ADD` except right-hand-side and carry are inverted
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
 	 */
-	do {
-		nextcooked(lstate, lbit, pL, iL);
-		emitcooked(estate, elast, lbit, pDst, dstpos);
-	} while (lstate);
+	inline void SUB(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-	// end-of-sequence
-	emitEOS(estate, elast, lbit, pDst, dstpos);
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+		R.start(iR);
 
-	return dstpos;
-}
+		bool ebit = 0;
+		bool carry = 1;
 
-/**
- * @date 2020-07-08 13:54:49
- *
- * Logical shift right
- *
- * Left-hand-side is streaming
- * Right-hand-size is enumerated and large values can critically impact operations.
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned LSR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+		do {
+			// load next data bit of input pipelines
+			L.nextbit();
+			R.nextbit();
 
-	unsigned lstate = 1, lbit;
-	unsigned estate = 1, ebit, elast = 0;
+			// operator SUB equals ADD(L,R^!) with inverted carry 
+			ebit = carry ^ L.bit ^ R.bit ^ 1;
+			carry = carry ? L.bit | (R.bit ^ 1) : L.bit & (R.bit ^ 1);
 
-	/*
-	 * decode rval
+			// emit operator result
+			out.emitbit(ebit);
+		} while (L.state || R.state);
+
+		// operator on final polarity
+		bool polarity = (carry ^ 1) ^ L.bit ^ R.bit;
+
+		/*
+		 * @date 2020-07-15 12:11:26
+		 * The final carry(`ebit`) needs to be emitted which makes the result 1 bit longer.
+		 * Piggyback end-of-sequence-polarity of current streak of same polarity.
+		 * Let the caller finalise the end-of-sequence.
+		 */
+		out.emitEOSS(polarity);
+
+		// finalise end-of-sequence
+		out.emitraw(polarity);
+	}
+
+	/**
+	 * @date 2020-07-15 12:36:50
+	 *
+	 * Logical shift left
+	 *
+	 * Left-hand-side is streaming
+	 * Right-hand-side is enumerated and large values can critically impact operations.
+	 * 
+	 * @date 2020-07-15 01:42:12
+	 * 
+	 * The shiftcount is most likely to be less than the length of the sequential memory storage.
+	 * right-hand-side could also be a string of which the length determines the shift count. 
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
 	 */
-	int rval;
-	rval = decode(pR, iR);
+	inline void LSL(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-	/*
-	 * Copy lval to output skipping first `rval` bits
+		// decode rval
+		int rval = R.decode(iR);
+
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+
+		// emit `rval` number of "0"
+		while (rval > 0) {
+			out.emitbit(0);
+			--rval;
+		}
+
+		// Copy lval to output
+		do {
+			L.nextbit();
+			out.emitbit(L.bit);
+		} while (L.state);
+
+		// end-of-sequence marker
+		out.emitEOSS(L.bit);
+
+		// finalise end-of-sequence
+		out.emitraw(L.bit);
+	}
+
+	/**
+	 * @date 2020-07-15 12:39:51
+	 *
+	 * Logical shift right
+	 *
+	 * Left-hand-side is streaming
+	 * Right-hand-size is enumerated and large values can critically impact operations.
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
 	 */
-	do {
-		nextcooked(lstate, lbit, pL, iL);
-		if (--rval < 0)
-			emitcooked(estate, elast, lbit, pDst, dstpos);
-	} while (lstate);
+	inline void LSR(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-	// end-of-sequence
-	emitEOS(estate, elast, lbit, pDst, dstpos);
+		// decode rval
+		int rval = R.decode(iR);
 
-	return dstpos;
-}
+		// start engines
+		out.start(iOut);
+		L.start(iL);
 
+		// Copy lval to output skipping first `rval` bits
+		do {
+			L.nextbit();
+			if (--rval < 0)
+				out.emitbit(L.bit);
+		} while (L.state);
 
-/**
- * @date 2020-07-08 01:15:35
- *
- * Streaming AND
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned AND(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+		// end-of-sequence marker
+		out.emitEOSS(L.bit);
 
-	// three pipelines, two for left/right operands one for the result.
-	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
-	//
-	unsigned lstate = 1, lbit = 0;
-	unsigned rstate = 1, rbit = 0;
-	unsigned estate = 1, ebit, elast = 0;
+		// finalise end-of-sequence
+		out.emitraw(L.bit);
+	}
 
-	do {
-		// load next data bit of input pipelines
-		nextcooked(lstate, lbit, pL, iL);
-		nextcooked(rstate, rbit, pR, iR);
+	/**
+	 * @date 2020-07-15 12:22:27
+	 *
+	 * Streaming AND
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
+	 */
+	inline void AND(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-		// operator
-		ebit = lbit & rbit;
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+		R.start(iR);
 
-		// emit operator result
-		emitcooked(estate, elast, ebit, pDst, dstpos);
-	} while (lstate || rstate);
+		do {
+			// load next data bit of input pipelines
+			L.nextbit();
+			R.nextbit();
 
-	// operator on final polarity
-	ebit = lbit & rbit;
+			// operator 
+			bool ebit = L.bit & R.bit;
 
-	// end-of-sequence
-	emitEOS(estate, elast, ebit, pDst, dstpos);
+			// emit operator result
+			out.emitbit(ebit);
+		} while (L.state || R.state);
 
-	return dstpos;
-}
+		// final polarity
+		bool polarity = L.bit & R.bit;
 
-/**
- * @date 2020-07-08 01:16:13
- *
- * Streaming XOR
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned XOR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+		// end-of-sequence marker
+		out.emitEOSS(polarity);
 
-	// three pipelines, two for left/right operands one for the result.
-	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
-	//
-	unsigned lstate = 1, lbit = 0;
-	unsigned rstate = 1, rbit = 0;
-	unsigned estate = 1, ebit, elast = 0;
+		// finalise end-of-sequence
+		out.emitraw(polarity);
+	}
 
-	do {
-		// load next data bit of input pipelines
-		nextcooked(lstate, lbit, pL, iL);
-		nextcooked(rstate, rbit, pR, iR);
+	/**
+	 * @date 2020-07-15 12:31:06
+	 *
+	 * Streaming XOR
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
+	 */
+	inline void XOR(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-		// operator
-		ebit = lbit ^ rbit;
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+		R.start(iR);
 
-		// emit operator result
-		emitcooked(estate, elast, ebit, pDst, dstpos);
-	} while (lstate || rstate);
+		do {
+			// load next data bit of input pipelines
+			L.nextbit();
+			R.nextbit();
 
-	// operator on final polarity
-	ebit = lbit ^ rbit;
+			// operator 
+			bool ebit = L.bit ^ R.bit;
 
-	// end-of-sequence
-	emitEOS(estate, elast, ebit, pDst, dstpos);
+			// emit operator result
+			out.emitbit(ebit);
+		} while (L.state || R.state);
 
-	return dstpos;
-}
+		// final polarity
+		bool polarity = L.bit ^ R.bit;
 
-/**
- * @date 2020-07-01 22:52:29
- *
- * Streaming OR
- *
- * @param pDst 	 bit-memory base of result
- * @param dstpos - bit position of result
- * @param pL - bit-memory base of left-hand-side
- * @param iL - bit position of left-hand-side
- * @param pR - bit-memory base of right-hand-side
- * @param iR - bit position of right-hand-side
- * @return dstpos + encoded-length
- */
-unsigned OR(unsigned char *pDst, unsigned dstpos, unsigned char *pL, unsigned iL, unsigned char *pR, unsigned iR) {
+		// end-of-sequence marker
+		out.emitEOSS(polarity);
 
-	// three pipelines, two for left/right operands one for the result.
-	// two consecutive "0" is the trigger. Either a "0" to end the sequence or "1" to escape and continue.
-	//
-	unsigned lstate = 1, lbit = 0;
-	unsigned rstate = 1, rbit = 0;
-	unsigned estate = 1, ebit, elast = 0;
+		// finalise end-of-sequence
+		out.emitraw(polarity);
+	}
 
-	do {
-		// load next data bit of input pipelines
-		nextcooked(lstate, lbit, pL, iL);
-		nextcooked(rstate, rbit, pR, iR);
+	/**
+	 * @date 2020-07-15 12:32:23
+	 *
+	 * Streaming OR
+	 *
+	 * @param out - memory port for result
+	 * @param iOut - location of result
+	 * @param L - memory port left-hand-side
+	 * @param iL - location of left-hand-side
+	 * @param R - memory port right-hand-side
+	 * @param iR - location right-hand-side
+	 */
+	inline void OR(OUTBIT &out, unsigned iOut, INBIT &L, unsigned iL, INBIT &R, unsigned iR) {
 
-		// operator
-		ebit = lbit | rbit;
+		// start engines
+		out.start(iOut);
+		L.start(iL);
+		R.start(iR);
 
-		// emit operator result
-		emitcooked(estate, elast, ebit, pDst, dstpos);
-	} while (lstate || rstate);
+		do {
+			// load next data bit of input pipelines
+			L.nextbit();
+			R.nextbit();
 
-	// operator on final polarity
-	ebit = lbit | rbit;
+			// operator 
+			bool ebit = L.bit | R.bit;
 
-	// end-of-sequence
-	emitEOS(estate, elast, ebit, pDst, dstpos);
+			// emit operator result
+			out.emitbit(ebit);
+		} while (L.state || R.state);
 
-	return dstpos;
-}
+		// final polarity
+		bool polarity = L.bit | R.bit;
+
+		// end-of-sequence marker
+		out.emitEOSS(polarity);
+
+		// finalise end-of-sequence
+		out.emitraw(polarity);
+	}
+
+};
 
 /*
  * @date 2020-07-08 00:33:53
@@ -531,34 +760,36 @@ unsigned char mem[512];
 unsigned pos;
 
 int main() {
-	int64_t num;
-	int polarity;
-
 	setlinebuf(stdout);
 	signal(SIGALRM, sigAlarm);
 	alarm(1);
+
+	INBIT ib(mem), L(mem), R(mem);
+	OUTBIT ob(mem);
 
 	/*
 	 * Display numbers for visual inspection
 	 */
 	if (0) {
-		for (num = -16; num <= +16; num++) {
+		for (int64_t num = -128; num <= +128; num++) {
 			// rewind memory
 			pos = 0;
 
 			// encode test value
-			pos = encode(mem, pos, num);
+			ob.encode(pos, num);
+			pos = ob.getpos();
 
-			printf("%3d: ", num);
+			printf("%3d: ", (int) num);
 
 			// display encoded answer
+			ib.start(0);
 			unsigned k;
 			for (k = 0; k < pos; k++)
-				putchar(nextraw(mem, k) ? '1' : '0');
+				putchar(ib.nextraw() ? '1' : '0');
 
 			// decode value
 			int64_t n;
-			n = decode(mem, 0);
+			n = ib.decode(0);
 			printf(" [%ld]", n);
 
 			putchar('\n');
@@ -568,16 +799,17 @@ int main() {
 	/*
 	 * Test that `encode/decode` counter each other.
 	 */
-	for (num = -(1 << 13); num <= +(1 << 13); num++) {
+	for (int64_t num = +(1 << 13); num <= +(1 << 13); num++) {
 		// rewind memory
 		pos = 0;
 
 		// encode test value
-		pos = encode(mem, pos, num);
+		ob.encode(pos, num);
+		pos = ob.getpos();
 
 		// decode value
 		int64_t n;
-		n = decode(mem, 0);
+		n = ib.decode(0);
 
 		if (n != num) {
 			fprintf(stderr, "encode/decode error. Expected=%ld Encountered=%ld\n", num, n);
@@ -589,8 +821,8 @@ int main() {
 	 * Test that the encoded value has smallest storage.
 	 * This is done by filling memory with quasi random bits, decoding+encoding, testing the size of representation being less-equal to the original
 	 */
-	for (polarity = 0; polarity < 2; polarity++) {
-		for (num = 0x0000; num <= 0xffff; num++) {
+	for (int polarity = 0; polarity < 2; polarity++) {
+		for (int64_t num = 0x0000; num <= 0xffff; num++) {
 			// setup memory
 			mem[0] = num;
 			mem[1] = (num >> 8);
@@ -608,14 +840,14 @@ int main() {
 
 			// decode value
 			int64_t n;
-			n = decode(mem, 0);
+			n = ib.decode(0);
 
 			// encode it again after presetting all bits of destination
 			if (polarity)
 				mem[0] = mem[1] = 0xff;
 			else
 				mem[0] = mem[1] = 0x00;
-			encode(mem, 0, n);
+			ob.encode(0, n);
 
 			// which bit is not part of the leading polarity
 			int lengthEncode = 0;
@@ -636,8 +868,9 @@ int main() {
 	/*
 	 * Test all the basic operators
 	 */
-	unsigned round;
-	for (round = 0; round < 10; round++) {
+	struct ALU alu;
+
+	for (unsigned round = 0; round < 10; round++) {
 		// display round
 		// @formatter:off
 		switch (round) {
@@ -654,10 +887,9 @@ int main() {
 		}
 		// @formatter:on
 
-		int64_t lval, rval;
 		int progress = 0;
-		for (lval = -(1 << 12); lval <= +(1 << 12); lval++) {
-			for (rval = -(1 << 12); rval <= +(1 << 12); rval++) {
+		for (int64_t lval = -(1 << 12); lval <= +(1 << 12); lval++) {
+			for (int64_t rval = -(1 << 12); rval <= +(1 << 12); rval++) {
 				// ticker
 				progress++;
 				if (tick) {
@@ -670,11 +902,13 @@ int main() {
 
 				// encode <left>
 				unsigned iL = pos;
-				pos = encode(mem, pos, lval);
+				ob.encode(pos, lval);
+				pos = ob.getpos();
 
 				// encode <right>
 				unsigned iR = pos;
-				pos = encode(mem, pos, rval);
+				ob.encode(pos, rval);
+				pos = ob.getpos();
 
 				// perform opcode and evaluate native
 				unsigned iOpcode = pos;
@@ -693,42 +927,49 @@ int main() {
 					expected = lval + rval;
 					break;
 				case 3:
-					pos = ADD(mem, pos, mem, iL, mem, iR);
+					alu.ADD(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval + rval;
 					break;
 				case 4:
-					pos = SUB(mem, pos, mem, iL, mem, iR);
+					alu.SUB(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval - rval;
 					break;
 				case 5:
 					if (rval < 0 || rval > 20)
-						continue;
-					pos = LSL(mem, pos, mem, iL, mem, iR);
+						continue; // limit range
+					alu.LSL(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval << rval;
 					break;
 				case 6:
 					if (rval < 0 || rval > 20)
-						continue;
-					pos = LSR(mem, pos, mem, iL, mem, iR);
+						continue; // limit range
+					alu.LSR(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval >> rval;
 					break;
 				case 7:
-					pos = AND(mem, pos, mem, iL, mem, iR);
+					alu.AND(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval & rval;
 					break;
 				case 8:
-					pos = XOR(mem, pos, mem, iL, mem, iR);
+					alu.XOR(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval ^ rval;
 					break;
 				case 9:
-					pos = OR(mem, pos, mem, iL, mem, iR);
+					alu.OR(ob, pos, L, iL, R, iR);
+					pos = ob.getpos();
 					expected = lval | rval;
 					break;
 				};
 
 				// extract
 				int64_t answer;
-				answer = decode(mem, iOpcode);
+				answer = ib.decode(iOpcode);
 
 				/*
 				 * Compare
@@ -741,12 +982,15 @@ int main() {
 				if (0) {
 					// encode answer to determine length
 					unsigned iAnswer = pos;
-					pos = encode(mem, pos, answer);
+					ob.encode(pos, answer);
+					pos = ob.getpos();
 
 					// display encoded answer
-					int k;
-					for (k = iOpcode; k < iAnswer; k++)
-						putchar(nextraw(mem, k) ? '1' : '0');
+					for (unsigned k = iOpcode; k < iAnswer; k++) {
+						ib.start(k);
+						ib.nextbit();
+						putchar(ib.bit ? '1' : '0');
+					}
 					putchar('\n');
 
 				}
