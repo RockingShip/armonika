@@ -1,4 +1,37 @@
-# Armonika
+---
+layout: home
+title: "armonika - Encoding/decoding/handling of variable length numbers in bit addressable memory"
+image: assets/favimage-840x472.jpg
+---
+
+## Work-In-Progress
+
+# armonika
+
+Encoding/decoding/handling of variable length numbers in bit addressable memory
+
+## Welcome to the Wonderful World of self describing streaming numbers
+
+*When everything is relative and you missed the origin*
+
+variable length/serial bus vs. fixed width/parallel.
+
+advantage of serial/small footprint with self terminiating encoding.
+
+The terminator marks either that "0" or "1" would continue indefinitely.
+
+3 components,
+- the streaming i/o port
+- simple arithmetic and logic.
+- validation
+
+implelemted as pull-event driven.
+
+serial has the added advantage of a smaller footprint.
+
+Encodes a delimiter in the data stream.
+That is N-consecutive same values.
+To allow that pattern to occur in data, the third bit
 
 Encoding/decoding/handling of variable length numbers in bit addressable memory.
 
@@ -31,6 +64,8 @@ Encounding is immune for "Y2K-bug" and "8-bit/64-bit compatible" issues.
 
 # Encoding/decoding scheme
 
+When you lost track of how many bits there are in an int...
+
 ```
     After n consecutive "0", force emit (on encoding) a "1" which is (force ignored) during decoding.
     n+1 consecutive "0" indicitates leading-zeros/end-of-number.
@@ -53,7 +88,7 @@ The binary input is read right-to-left, the string output is read left-to-right.
 
 | Input binary | Output N=2 | output N=3 |
 |------:|:-----------|:-----------|
-| <---- | ------->   | ------->
+| ----< | >-------   | >-------
 | 00000 | 000        | 0000      
 | 00001 | 1000       | 10000     
 | 00010 | 01000      | 010000    
@@ -188,10 +223,18 @@ For SUB the initial carry-in is "1" and right is bit-inverted.
 Implies that all subtracts can be rewritten as additions.
 With no subtract functionality being used, removed the use of an active carry-out.
 
+## Source code
+
+Grab one of the tarballs at [https://github.com/RockingShip/smile/releases](https://github.com/RockingShip/armonika/releases) or checkout the latest code:
+
+```sh
+  git clone https://github.com/RockingShip/armonika.git
+```
+
 # Versioning
 
-We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/xyzzy/untangle/tags).
+We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/RockingShip/armonika/tags).
 
 # License
 
-This project is licensed under the GNU General Public License v3 - see the [LICENSE](LICENSE) file for details
+This project is licensed under the GNU General Public License v3 - see the [LICENSE.txt](LICENSE.txt) file for details

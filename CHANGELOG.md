@@ -7,13 +7,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2021-03-23 12:37:21 Added: `moonwalk` theme.
 2020-07-18 00:36:32 Added handful divide by constants to `div.c` to asses the inner workings.
 2020-07-16 23:04:20 Added `div.c` to research streaming `DIV`.
 2020-07-12 23:00:59 Upgraded `srun3` with memory port (sequential access) and `ALU` for core opcodes/instructions.
 2020-07-10 23:35:46 Renamed `srun3.c` into `srun3.cc`.
 ```
 
-## [Release 1.1.0] 2020-07-10 22:48:53
+## 2020-07-10 22:48:53 [Version 1.1.0]
 
 Positive+Negative numbers indicated by polarity end-of-sequence marker.  
 `ADD/SUB/LSL/LSR/AND/XOR/OR` operators.  
@@ -31,7 +32,7 @@ Full Streaming except for `LSL/LSR` right-hand-side.
                     Renamed `frequency.c` into `sfrequency.c` for signed encoding. 
 ```
 
-## Release 1.0.0 2020-06-29 13:23:01
+## 2020-06-29 13:23:01 Version 1.0.0
 
 Basic proof of concept.  
 Signed variable-width numbers with configurable runlength terminator.  
@@ -43,5 +44,5 @@ Signed variable-width numbers with configurable runlength terminator.
 2020-06-24 00:29:02 Initial commit.
 ```
 
-[Unreleased]: /RockingShip/armonika/compare/v1.1.0...HEAD
-[1.1.0]: /RockingShip/armonika/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/RockingShip/armonika/compare/v1.1.0...HEAD
+[Version 1.1.0]: https://github.com/RockingShip/armonika/compare/v1.0.0...v1.1.0
