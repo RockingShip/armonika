@@ -10,6 +10,9 @@ image: assets/favimage-840x472.jpg
 
 Encoding/decoding/handling of variable length numbers in bit addressable memory
 
+Instead of an ad with tracking...  
+Like to [donate ![opencollective](assets/opencollective-icon.svg)](https://opencollective.com/RockingShip) some appreciation for the use or inspiration this gives you?
+
 ## Welcome to the Wonderful World of self describing streaming numbers
 
 *When everything is relative and you missed the origin*

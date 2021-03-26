@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ```
+2021-03-26 19:11:36 Added: Donate button.
 2021-03-23 12:37:21 Added: `moonwalk` theme.
 2020-07-18 00:36:32 Added handful divide by constants to `div.c` to asses the inner workings.
 2020-07-16 23:04:20 Added `div.c` to research streaming `DIV`.
